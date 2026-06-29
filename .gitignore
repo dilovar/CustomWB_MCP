@@ -1,0 +1,16 @@
+# .NET build output
+bin/
+obj/
+
+# macOS
+.DS_Store
+
+# Rider / VS
+.idea/
+.vs/
+*.user
+
+# Секреты в проект не попадают (user-secrets лежат вне репозитория, в ~/.microsoft),
+# но на всякий случай игнорируем локальные конфиги с возможными ключами.
+appsettings.*.local.json
+secrets.json
