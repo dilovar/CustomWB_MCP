@@ -3,9 +3,6 @@ using ModelContextProtocol.Server;
 
 namespace CustomWB_MCP.Tools;
 
-/// <summary>
-/// Простейший инструмент для проверки, что Claude вообще видит сервер и может вызвать tool.
-/// </summary>
 [McpServerToolType]
 public static class PingTool
 {

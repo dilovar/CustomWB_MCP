@@ -1,15 +1,15 @@
 <Project Sdk="Microsoft.NET.Sdk.Web">
 
   <PropertyGroup>
-    <!-- net8.0 — LTS, безопасный минимум. Можно поднять до net9.0/net10.0, SDK поддерживает. -->
     <TargetFramework>net8.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <!-- Идентификатор для dotnet user-secrets (токен WB хранится там, не в коде). -->
     <UserSecretsId>customwb-mcp-secrets</UserSecretsId>
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- Этот пакет тянет за собой основной ModelContextProtocol. Версию можно взять последнюю стабильную. -->
+    <!-- Тянет за собой основной ModelContextProtocol. Версию при необходимости подними до последней стабильной. -->
     <PackageReference Include="ModelContextProtocol.AspNetCore" Version="1.2.0" />
   </ItemGroup>
 
