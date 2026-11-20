@@ -6,12 +6,15 @@ using System.Text.Json.Nodes;
 namespace CustomWB_MCP.Wb;
 
 /// <summary>
-/// Низкоуровневый помощник для вызовов WB: ретраи на 429 (с учётом Retry-After)
-/// и временные 5xx с экспоненциальным backoff. 401/403/подписку НЕ лечим повторами.
+/// Низкоуровневый помощник для вызовов WB.
+/// 429: НЕ штормим. Если WB прислал Retry-After/X-Ratelimit-Retry и ждать недолго (&lt;= 30с) —
+/// ждём один раз и повторяем один раз; иначе сразу возвращаем "частично" с указанием, сколько ждать.
+/// Это важно, потому что у Базового токена лимиты часовые — быстрыми повторами их не обойти, только усугубить.
+/// 5xx — ограниченные повторы с backoff. 401/403 — без повторов.
 /// </summary>
 public static class WbHttp
 {
-    private const int MaxAttempts = 4;
+    private const int Max5xxAttempts = 3;
 
     public sealed class WbCallException : Exception
     {
@@ -19,11 +22,9 @@ public static class WbHttp
         public WbCallException(SourceStatus status, string message) : base(message) => Status = status;
     }
 
-    /// <summary>GET с ретраями, возвращает корневой JsonNode.</summary>
     public static Task<JsonNode?> GetJsonAsync(HttpClient client, string path, CancellationToken ct)
         => SendJsonAsync(client, () => new HttpRequestMessage(HttpMethod.Get, path), ct);
 
-    /// <summary>POST с JSON-телом и ретраями, возвращает корневой JsonNode.</summary>
     public static Task<JsonNode?> PostJsonAsync(HttpClient client, string path, object body, CancellationToken ct)
         => SendJsonAsync(client, () =>
         {
@@ -37,7 +38,8 @@ public static class WbHttp
     private static async Task<JsonNode?> SendJsonAsync(
         HttpClient client, Func<HttpRequestMessage> requestFactory, CancellationToken ct)
     {
-        for (var attempt = 1; ; attempt++)
+        var retried429 = false;
+        for (var attempt5xx = 1; ; attempt5xx++)
         {
             using var req = requestFactory();
             HttpResponseMessage resp;
@@ -47,14 +49,13 @@ public static class WbHttp
             }
             catch (TaskCanceledException) when (!ct.IsCancellationRequested)
             {
-                if (attempt >= MaxAttempts)
-                    throw new WbCallException(SourceStatus.Error, "таймаут запроса к WB");
-                await Task.Delay(Backoff(attempt), ct);
-                continue;
+                throw new WbCallException(SourceStatus.Error, "таймаут запроса к WB");
             }
 
             switch ((int)resp.StatusCode)
             {
+                case 204:
+                    return null;
                 case >= 200 and < 300:
                 {
                     var text = await resp.Content.ReadAsStringAsync(ct);
@@ -66,37 +67,43 @@ public static class WbHttp
                         "401: токен недействителен или его категория не совпадает с этим API");
                 case 403:
                     throw new WbCallException(SourceStatus.NoAccess,
-                        "403: нет прав; возможно, требуется подписка (напр. Джем) или метод заблокирован");
+                        "403: нет прав; возможно, нужна подписка/категория или тип токена");
                 case 429:
                 {
-                    if (attempt >= MaxAttempts)
-                        throw new WbCallException(SourceStatus.Partial, "429: превышен лимит запросов WB");
-                    var retryAfter = ParseRetryAfter(resp) ?? Backoff(attempt);
-                    await Task.Delay(retryAfter, ct);
-                    continue;
+                    var wait = ParseRetryAfter(resp);
+                    // Ждём и повторяем ОДИН раз только если ждать недолго.
+                    if (!retried429 && wait is { } w && w <= TimeSpan.FromSeconds(30))
+                    {
+                        retried429 = true;
+                        await Task.Delay(w, ct);
+                        continue;
+                    }
+                    var hint = wait is { } ww
+                        ? $"повторить примерно через {(int)ww.TotalSeconds} с"
+                        : "у Базового токена лимит часовой — повторить позже";
+                    throw new WbCallException(SourceStatus.Partial, $"429: превышен лимит запросов WB ({hint})");
                 }
                 case >= 500:
                 {
-                    if (attempt >= MaxAttempts)
+                    if (attempt5xx >= Max5xxAttempts)
                         throw new WbCallException(SourceStatus.Error, $"{(int)resp.StatusCode}: сервис WB недоступен");
-                    await Task.Delay(Backoff(attempt), ct);
+                    await Task.Delay(TimeSpan.FromMilliseconds(500 * attempt5xx), ct);
                     continue;
                 }
-                default:
+                case 404:
                     throw new WbCallException(SourceStatus.Error,
-                        $"{(int)resp.StatusCode}: {resp.ReasonPhrase}");
+                        $"404: эндпоинт не найден ({req.Method} {req.RequestUri}). Сверить путь с актуальной докой WB.");
+                default:
+                    throw new WbCallException(SourceStatus.Error, $"{(int)resp.StatusCode}: {resp.ReasonPhrase}");
             }
         }
     }
 
-    private static TimeSpan Backoff(int attempt) => TimeSpan.FromMilliseconds(400 * Math.Pow(2, attempt - 1));
-
     private static TimeSpan? ParseRetryAfter(HttpResponseMessage resp)
     {
-        // WB отдаёт X-Ratelimit-Retry (секунды) и/или стандартный Retry-After.
         if (resp.Headers.TryGetValues("X-Ratelimit-Retry", out var vals)
             && int.TryParse(vals.FirstOrDefault(), out var secs) && secs > 0)
-            return TimeSpan.FromSeconds(Math.Min(secs, 30));
+            return TimeSpan.FromSeconds(secs);
         if (resp.Headers.RetryAfter?.Delta is { } delta)
             return delta;
         return null;
