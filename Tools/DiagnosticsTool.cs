@@ -7,9 +7,9 @@ using CustomWB_MCP.Wb;
 namespace CustomWB_MCP.Tools;
 
 /// <summary>
-/// Диагностика для отладки 401. Показывает: (1) видит ли сервер токен WB и нет ли в нём мусора
-/// (без раскрытия значения), (2) достаёт ли Railway до WB через неавторизованный /ping.
-/// Безопасно вызывать.
+/// Диагностика для отладки 401. Показывает: видит ли сервер токен (через конфигурацию и напрямую
+/// из окружения), какие переменные окружения с token/wild/berr реально переданы контейнеру (ИМЕНА, без значений),
+/// и достаёт ли Railway до WB через неавторизованный /ping. Значение токена НЕ раскрывается.
 /// </summary>
 [McpServerToolType]
 public sealed class DiagnosticsTool
@@ -25,13 +25,25 @@ public sealed class DiagnosticsTool
 
     private static readonly JsonSerializerOptions Json = new() { WriteIndented = true };
 
-    [McpServerTool, Description("Диагностика 401: видит ли сервер токен WB (длина, мусор — без раскрытия значения) и достаёт ли Railway до WB через неавторизованный /ping. Для отладки.")]
+    [McpServerTool, Description("Диагностика 401: видит ли сервер токен WB (через конфиг и напрямую из env), имена релевантных переменных окружения (без значений) и доступность WB /ping. Для отладки.")]
     public async Task<string> WbDiagnostics(CancellationToken ct = default)
     {
-        var token = _config["Wildberries:Token"];
-        var present = !string.IsNullOrEmpty(token);
+        // Токен через конфигурацию (.NET маппит Wildberries__Token -> Wildberries:Token)
+        var cfgToken = _config["Wildberries:Token"];
+        // Токен напрямую из окружения (без маппинга)
+        var envDoubleUnderscore = Environment.GetEnvironmentVariable("Wildberries__Token");
+        var envWbToken = Environment.GetEnvironmentVariable("WB_TOKEN");
 
-        // Проверка связи Railway -> WB: /ping категории Статистика не требует токена.
+        // Имена всех переменных окружения, похожих на токен WB (ТОЛЬКО имена, без значений)
+        var relevantEnvNames = Environment.GetEnvironmentVariables()
+            .Keys.Cast<string>()
+            .Where(k => k.Contains("token", StringComparison.OrdinalIgnoreCase)
+                     || k.Contains("wild", StringComparison.OrdinalIgnoreCase)
+                     || k.Contains("berr", StringComparison.OrdinalIgnoreCase))
+            .OrderBy(k => k)
+            .ToList();
+
+        // Проверка связи Railway -> WB (без токена)
         string wbPing;
         try
         {
@@ -44,9 +56,18 @@ public sealed class DiagnosticsTool
             wbPing = $"ОШИБКА СВЯЗИ: {ex.GetType().Name}: {ex.Message}";
         }
 
+        var token = cfgToken;
+        var present = !string.IsNullOrEmpty(token);
+
         var info = new
         {
-            tokenConfigured = present,
+            // откуда виден токен
+            tokenViaConfig = !string.IsNullOrEmpty(cfgToken),
+            tokenViaEnv_Wildberries__Token = !string.IsNullOrEmpty(envDoubleUnderscore),
+            tokenViaEnv_WB_TOKEN = !string.IsNullOrEmpty(envWbToken),
+            // какие имена реально есть в окружении контейнера
+            relevantEnvNames,
+            // качество значения (по конфиг-токену)
             tokenLength = token?.Length ?? 0,
             hasSurroundingWhitespace = present && token != token!.Trim(),
             containsNewline = present && (token!.Contains('\n') || token.Contains('\r')),
